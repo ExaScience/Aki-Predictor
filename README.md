@@ -27,7 +27,7 @@ python aki-ml.py
 
 The scripts contains the following functions:
 
-* run_aki_model(): predicts wether a patient will develop AKI withnin the first 7 days of its stay and which stage of AKI it is according to the KIDIGO guidelines.
-* cluster_ethnicity(): subset the data  by  ethnicity:  train  on  ”Caucasian”  (all variants),  predict  for  all  other  ethnicities.   
-* change_data_size(): does random subsampling of available training data
+* run_aki_model: predicts wether a patient will develop AKI withnin the first 7 days of its stay and which stage of AKI it is according to the KIDIGO guidelines.
+* cluster_ethnicity: subsets the data  by  ethnicity:  train  on  ”Caucasian”  (all variants),  predict  for  all  other  ethnicities.   
+* change_data_size: does random subsampling of available training data
 
