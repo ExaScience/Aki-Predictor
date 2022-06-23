@@ -81,6 +81,11 @@ def code_ethnicity(ethinicity):
     elif (ethinicity == 'ASIAN - JAPANESE'): return 2;
     elif (ethinicity == 'AMERICAN INDIAN/ALASKA NATIVE FEDERALLY RECOGNIZED TRIBE'): return 4;
 
+def code_system(system):
+   
+    if (system == 'carevue'): return 0;
+    elif (system == 'metavision'): return 1;  
+    
 def code_gender(gender):
     
     if (gender =='F'): return 0;
@@ -95,9 +100,6 @@ def cleanup_data(filename, outdir):
     df.columns = map(str.upper, df.columns)
     print(df.shape)
     
-    print(df.groupby('AKI')['ICUSTAY_ID'].nunique())
-    print(df.groupby('AKI_STAGE_7DAY')['ICUSTAY_ID'].nunique())
-       
     #exclude CKD and AKI on admission patients
     df = df[~(df['AKI'] == 2)]
     df = df[~(df['AKI'] == 3)]
@@ -107,28 +109,45 @@ def cleanup_data(filename, outdir):
       
     #Consider only adults
     df = df[~(df['AGE'] < 18)] 
+    
     df['ETHNICITY'] = df['ETHNICITY'].apply(lambda x: code_ethnicity(x)) 
     df['GENDER'] = df['GENDER'].apply(lambda x: code_gender(x)) 
     
     print(df.groupby('ETHNICITY')['ICUSTAY_ID'].nunique())
-    
-    df = df.rename(columns={'HADM_ID_X' : 'HADM_ID','GLUCOSE_MIN_X':'GLUCOSE_MIN', 'GLUCOSE_MAX_X':'GLUCOSE_MAX', 'SUBJECT_ID_Y': 'SUBJECT_ID', 'SUBJECT_ID_X.1': 'SUBJECT_ID'})
+             
+    df = df.rename(columns={'HADM_ID_X' : 'HADM_ID','GLUCOSE_MIN_X':'GLUCOSE_MIN', 'GLUCOSE_MAX_X':'GLUCOSE_MAX', 'SUBJECT_ID_Y': 'SUBJECT_ID', 'SUBJECT_ID_X.1': 'SUBJECT_ID', 'DBSOURCE_Y' : 'DBSOURCE'})
     df = df.fillna(0)
     
    # df = df.fillna(df.mean())
-
+   
     #print(pd.isna(df) == True)
                     
     df = df.drop(df.columns[1], axis=1)
     
-    print("cleanup1", df.columns)
-        
+    print(df.groupby('AKI')['ICUSTAY_ID'].nunique())
+    print(df.groupby('AKI_STAGE_7DAY')['ICUSTAY_ID'].nunique())
+            
+    print('Non AKI Patients : {}'.format(df.loc[df['AKI_STAGE_7DAY'] == 0]['ICUSTAY_ID'].count()))
+    print('AKI patients STAGE 1: {}'.format(df.loc[df['AKI_STAGE_7DAY'] == 1]['ICUSTAY_ID'].count()))
+    print('AKI Patients STAGE 2: {}'.format(df.loc[df['AKI_STAGE_7DAY'] == 2]['ICUSTAY_ID'].count()))
+    print('AKI Patients STAGE 3: {}'.format(df.loc[df['AKI_STAGE_7DAY'] == 3]['ICUSTAY_ID'].count()))
+    print('NAN patients: {}'.format(df['AKI'].isna().sum()))
+    
     if 'AKI_7DAY' in df.columns: 
         # ,  'SUBJECT_ID_x','GLUCOSE_MIN_y', 'GLUCOSE_MAX_y'
-        df = df.drop(['ADMITTIME', 'DISCHTIME', 'OUTTIME', 'INTIME', 'DOB', 'CHARTTIME_CREAT', 'UNNAMED: 0', 'AKI_STAGE_CREAT', 'AKI_7DAY', 'GLUCOSE_MAX_Y', 'GLUCOSE_MIN_Y'], axis =1)
+        df = df.drop(['ADMITTIME', 'DISCHTIME', 'OUTTIME', 'INTIME', 'DOB', 'CHARTTIME_CREAT', 'UNNAMED: 0', 'AKI_STAGE_CREAT', 'AKI_7DAY', 'GLUCOSE_MAX_Y', 'GLUCOSE_MIN_Y', 'DBSOURCE_X'], axis =1)
     else:
-        df = df.drop(['ADMITTIME', 'DISCHTIME', 'OUTTIME', 'INTIME', 'DOB', 'CHARTTIME_CREAT', 'CHARTTIME_UO', 'HADM_ID_x', 'Unnamed: 0', 'AKI_STAGE_CREAT', 'AKI_STAGE_48HR', 'AKI_STAGE_UO', 'AKI_48HR', 'SUBJECT_ID_y', 'SUBJECT_ID_x.1', 'SUBJECT_ID_x', 'HADM_ID_y' ,'GLUCOSE_MIN_y', 'GLUCOSE_MAX_y'], axis =1)
- 
+        df = df.drop(['ADMITTIME', 'DISCHTIME', 'OUTTIME', 'INTIME', 'DOB', 'CHARTTIME_CREAT', 'CHARTTIME_UO', 'HADM_ID_x', 'Unnamed: 0', 'AKI_STAGE_CREAT', 'AKI_STAGE_48HR', 'AKI_STAGE_UO', 'AKI_48HR', 'SUBJECT_ID_y', 'SUBJECT_ID_x.1', 'SUBJECT_ID_x', 'HADM_ID_y' ,'GLUCOSE_MIN_y', 'GLUCOSE_MAX_y', 'DBSOURCE_X'], axis =1)
+    
+    if (isinstance(df['DBSOURCE'], pd.DataFrame)): 
+        df['DBSOURCE_NEW'] = df['DBSOURCE'].iloc[:, 0]
+        df = df.drop(['DBSOURCE'], axis =1)
+        df = df.rename(columns={'DBSOURCE_NEW' : 'DBSOURCE'})
+           
+    df = df[~(df['DBSOURCE'] == 'both')]
+            
+    df['DBSOURCE'] = df['DBSOURCE'].apply(lambda x: code_system(x)) 
+            
     return df
 
 def accuracy_confusion(confusion_matrix):
@@ -228,7 +247,78 @@ def run_aki_model(df, filename):
     Y_pred_train, Y_pred_test = aki_model(X_train, to_categorical(Y_train), X_test, to_categorical(Y_test), filename)
     
     compute_metrics(Y_test, Y_pred_test, multiclass=True)
+
+def cluster_system(df):
         
+    print("start system clustering")
+    
+    careview = df.loc[df['DBSOURCE']==0]
+    metavision = df.loc[df['DBSOURCE']==1]
+    
+    scaler.fit(careview.iloc[:,2:]) 
+    careview.iloc[:,2:] = scaler.transform(careview.iloc[:,2:])
+    metavision.iloc[:,2:] = scaler.transform(metavision.iloc[:,2:])
+    
+    X_careview = careview.drop(['AKI', 'AKI_STAGE_7DAY'], axis=1)
+    Y_careview = careview['AKI_STAGE_7DAY']
+
+    X_metavision = metavision.drop(['AKI', 'AKI_STAGE_7DAY'], axis=1)
+    Y_metavision = metavision['AKI_STAGE_7DAY']
+
+    print("Y_careview" , np.unique(Y_careview, return_counts=True))
+    print("Y_metavision" , np.unique(Y_metavision, return_counts=True))
+     
+    print("Scenario1")
+    
+    print("Train on TRAIN careview set + test on TEST careview set + test on all metavision set")
+       
+    careview_train, careview_test = make_train_test(careview, 0.2, seed=1234)
+    X_careview_train = careview_train.drop(['AKI', 'AKI_STAGE_7DAY'], axis=1)
+    Y_careview_train = careview_train['AKI_STAGE_7DAY']
+    X_careview_test = careview_test.drop(['AKI', 'AKI_STAGE_7DAY'], axis=1)
+    Y_careview_test = careview_test['AKI_STAGE_7DAY']
+ 
+    sm = SMOTE()
+    X_careview_res_train, Y_careview_res_train = sm.fit_resample(X_careview_train, Y_careview_train) 
+    X_careview_res_test, Y_careview_res_test = sm.fit_resample(X_careview_test, Y_careview_test) 
+
+    Y_pred_careview , Y_pred_careview, Y_pred_metavision = keras_model(X_careview_train,  to_categorical(Y_careview_train), X_careview_test,  to_categorical(Y_careview_test), X_metavision,  to_categorical(Y_metavision), "output_model_system_clustered.h5", 'pretrained_weights_system_clustered.h5')              
+    compute_metrics(Y_careview_test, Y_pred_careview, multiclass=True)
+    compute_metrics(Y_metavision, Y_pred_metavision, multiclass=True)  
+         
+    Y_pred_careview , Y_pred_careview, Y_pred_metavision = keras_model2(X_careview_train,  to_categorical(Y_careview_train), X_careview_test,  to_categorical(Y_careview_test), X_metavision,  to_categorical(Y_metavision), "output_model_system_clustered.h5", 'pretrained_weights_system_clustered.h5')        
+    compute_metrics(Y_careview_test, Y_pred_careview, multiclass=True)
+    compute_metrics(Y_metavision, Y_pred_metavision, multiclass=True)  
+  
+    Y_pred_careview , Y_pred_careview, Y_pred_metavision = keras_model(X_careview_res_train,  to_categorical(Y_careview_res_train), X_careview_res_test,  to_categorical(Y_careview_res_test), X_metavision,  to_categorical(Y_metavision), "output_model_system_clustered.h5", 'pretrained_weights_system_clustered.h5')              
+    compute_metrics(Y_careview_res_test, Y_pred_careview, multiclass=True)
+    compute_metrics(Y_metavision, Y_pred_metavision, multiclass=True)  
+    
+    print("scenario2")            
+    print("Train on TRAIN metavision set + test on TEST metavision set + test on all careview set")
+ 
+    metavision_train, metavision_test = make_train_test(metavision, 0.2, seed=1234)
+    X_metavision_train = metavision_train.drop(['AKI', 'AKI_STAGE_7DAY'], axis=1)
+    Y_metavision_train = metavision_train['AKI_STAGE_7DAY']
+    X_metavision_test = metavision_test.drop(['AKI', 'AKI_STAGE_7DAY'], axis=1)
+    Y_metavision_test = metavision_test['AKI_STAGE_7DAY'] 
+ 
+    sm = SMOTE()
+    X_metavision_res_train, Y_metavision_res_train = sm.fit_resample(X_metavision_train, Y_metavision_train) 
+    X_metavision_res_test, Y_metavision_res_test = sm.fit_resample(X_metavision_test, Y_metavision_test) 
+  
+    Y_pred_metavision , Y_pred_metavision , Y_pred_careview = keras_model(X_metavision_train,  to_categorical(Y_metavision_train), X_metavision_test,  to_categorical(Y_metavision_test), X_careview,  to_categorical(Y_careview), "output_model_system_clustered2.h5", 'pretrained_weights_system_clustered2.h5')            
+    compute_metrics(Y_metavision_test, Y_pred_metavision, multiclass=True)
+    compute_metrics(Y_careview, Y_pred_careview, multiclass=True)  
+    
+    Y_pred_metavision , Y_pred_metavision , Y_pred_careview = keras_model2(X_metavision_train,  to_categorical(Y_metavision_train), X_metavision_test,  to_categorical(Y_metavision_test), X_careview,  to_categorical(Y_careview), "output_model_system_clustered2.h5", 'pretrained_weights_system_clustered2.h5')            
+    compute_metrics(Y_metavision_test, Y_pred_metavision, multiclass=True)
+    compute_metrics(Y_careview, Y_pred_careview, multiclass=True)  
+
+    Y_pred_metavision , Y_pred_metavision , Y_pred_careview = keras_model(X_metavision_res_train,  to_categorical(Y_metavision_res_train), X_metavision_res_test,  to_categorical(Y_metavision_res_test), X_careview,  to_categorical(Y_careview), "output_model_system_clustered2.h5", 'pretrained_weights_system_clustered2.h5')            
+    compute_metrics(Y_metavision_res_test, Y_pred_metavision, multiclass=True)
+    compute_metrics(Y_careview, Y_pred_careview, multiclass=True) 
+    
 def cluster_ethnicity(df):
     
     print("start ethinicty clustering")
@@ -371,20 +461,20 @@ if __name__ == '__main__':
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
  
     df = df[['AKI', 'AKI_STAGE_7DAY', 'CREATININE_MAX', 'CREATININE_MIN', 'CREAT', 'EGFR', 'POTASSIUM_MAX', 'GLUCOSE_MAX', 'PLATELET_MIN', 
-               'BUN_MAX', 'WBC_MIN', 'PLATELET_MAX', 'TEMPC_MEAN', 'GLUCOSE_MEAN', 'PTT_MAX', 'TEMPC_MIN', 'BUN_MIN', 'HEMATOCRIT_MIN', 
-               'SPO2_MEAN', 'MEANBP_MEAN', 'AGE', 'HEARTRATE_MEAN', 'PT_MAX', 'TEMPC_MAX', 'RESPRATE_MEAN', 'CHLORIDE_MAX', 'GLUCOSE_MIN', 'WBC_MAX', 
-               'DIASBP_MEAN', 'SYSBP_MAX', 'DIASBP_MIN', 'CHLORIDE_MIN', 'SPO2_MIN', 'HEARTRATE_MAX', 'HEMOGLOBIN_MAX', 'SYSBP_MEAN', 'HEMATOCRIT_MAX', 'DIASBP_MAX', 
-               'HEARTRATE_MIN', 'SYSBP_MIN', 'SODIUM_MIN', 'MEANBP_MAX', 'BICARBONATE_MAX', 'MEANBP_MIN', 'SODIUM_MAX', 'ANIONGAP_MAX', 'ANIONGAP_MIN', 'HEMOGLOBIN_MIN', 
-               'LACTATE_MIN', 'BICARBONATE_MIN', 'PTT_MIN', 'PT_MIN', 'BILIRUBIN_MAX', 'RESPRATE_MIN', 'LACTATE_MAX', 'RESPRATE_MAX', 'ALBUMIN_MIN', 'POTASSIUM_MIN', 'INR_MAX', 
-               'ALBUMIN_MAX', 'BILIRUBIN_MIN', 'INR_MIN', 'BANDS_MIN', 'ETHNICITY', 'BANDS_MAX', 'HYPERTENSION', 'DIABETES_UNCOMPLICATED', 'VALVULAR_DISEASE', 
-               'CONGESTIVE_HEART_FAILURE', 'SPO2_MAX', 'ALCOHOL_ABUSE', 'GENDER', 'CARDIAC_ARRHYTHMIAS', 'PERIPHERAL_VASCULAR', 'OBESITY', 'HYPOTHYROIDISM', 'DIABETES_COMPLICATED', 
-               'LIVER_DISEASE', 'DRUG_ABUSE', 'RENAL_FAILURE']]
+                'BUN_MAX', 'WBC_MIN', 'PLATELET_MAX', 'TEMPC_MEAN', 'GLUCOSE_MEAN', 'PTT_MAX', 'TEMPC_MIN', 'BUN_MIN', 'HEMATOCRIT_MIN', 
+                'SPO2_MEAN', 'MEANBP_MEAN', 'AGE', 'DBSOURCE', 'HEARTRATE_MEAN', 'PT_MAX', 'TEMPC_MAX', 'RESPRATE_MEAN', 'CHLORIDE_MAX', 'GLUCOSE_MIN', 'WBC_MAX', 
+                'DIASBP_MEAN', 'SYSBP_MAX', 'DIASBP_MIN', 'CHLORIDE_MIN', 'SPO2_MIN', 'HEARTRATE_MAX', 'HEMOGLOBIN_MAX', 'SYSBP_MEAN', 'HEMATOCRIT_MAX', 'DIASBP_MAX', 
+                'HEARTRATE_MIN', 'SYSBP_MIN', 'SODIUM_MIN', 'MEANBP_MAX', 'BICARBONATE_MAX', 'MEANBP_MIN', 'SODIUM_MAX', 'ANIONGAP_MAX', 'ANIONGAP_MIN', 'HEMOGLOBIN_MIN', 
+                'LACTATE_MIN', 'BICARBONATE_MIN', 'PTT_MIN', 'PT_MIN', 'BILIRUBIN_MAX', 'RESPRATE_MIN', 'LACTATE_MAX', 'RESPRATE_MAX', 'ALBUMIN_MIN', 'POTASSIUM_MIN', 'INR_MAX', 
+                'ALBUMIN_MAX', 'BILIRUBIN_MIN', 'INR_MIN', 'BANDS_MIN', 'ETHNICITY', 'BANDS_MAX', 'HYPERTENSION', 'DIABETES_UNCOMPLICATED', 'VALVULAR_DISEASE', 
+                'CONGESTIVE_HEART_FAILURE', 'SPO2_MAX', 'ALCOHOL_ABUSE', 'GENDER', 'CARDIAC_ARRHYTHMIAS', 'PERIPHERAL_VASCULAR', 'OBESITY', 'HYPOTHYROIDISM', 'DIABETES_COMPLICATED', 
+                'LIVER_DISEASE', 'DRUG_ABUSE', 'RENAL_FAILURE']]
     
     df2 = cleanup_data("INFO_DATASET_7days_creatinine+urine_withcomorbidities.csv", outdir)
     df2 = df2.replace([np.inf, -np.inf], np.nan).dropna()
  
     df2 = df2[['AKI', 'AKI_STAGE_7DAY', 'UO_RT_24HR', 'UO_RT_12HR', 'UO_RT_6HR', 'CREATININE_MAX', 'CREATININE_MIN', 'CREAT', 'EGFR', 'PLATELET_MAX', 'WBC_MAX', 'BUN_MAX', 
-        'PLATELET_MIN', 'AGE', 'GLUCOSE_MIN', 'TEMPC_MIN', 'WBC_MIN', 'GLUCOSE_MAX', 'DIASBP_MEAN', 'BUN_MIN', 'RESPRATE_MEAN', 'SYSBP_MAX', 'POTASSIUM_MAX', 'CHLORIDE_MAX', 
+        'PLATELET_MIN', 'AGE', 'DBSOURCE', 'GLUCOSE_MIN', 'TEMPC_MIN', 'WBC_MIN', 'GLUCOSE_MAX', 'DIASBP_MEAN', 'BUN_MIN', 'RESPRATE_MEAN', 'SYSBP_MAX', 'POTASSIUM_MAX', 'CHLORIDE_MAX', 
         'HEARTRATE_MAX', 'HEARTRATE_MEAN', 'SPO2_MEAN', 'PTT_MAX', 'MEANBP_MEAN', 'CHLORIDE_MIN', 'GLUCOSE_MEAN', 'PTT_MIN', 'TEMPC_MAX', 'MEANBP_MIN', 'ANIONGAP_MAX', 'SODIUM_MIN',
        'HEMOGLOBIN_MAX', 'HEMATOCRIT_MAX', 'MEANBP_MAX', 'DIASBP_MAX', 'HEMATOCRIT_MIN', 'SPO2_MIN', 'SODIUM_MAX', 'TEMPC_MEAN', 'DIASBP_MIN',
        'HEARTRATE_MIN', 'RESPRATE_MAX', 'HEMOGLOBIN_MIN', 'BICARBONATE_MAX', 'SYSBP_MIN', 'SYSBP_MEAN', 'BICARBONATE_MIN', 'POTASSIUM_MIN',
@@ -392,13 +482,15 @@ if __name__ == '__main__':
        'ETHNICITY', 'LACTATE_MIN', 'INR_MAX', 'BANDS_MAX', 'BANDS_MIN', 'HYPERTENSION', 'HYPOTHYROIDISM', 'CONGESTIVE_HEART_FAILURE', 'GENDER', 'CARDIAC_ARRHYTHMIAS', 'SPO2_MAX',
        'ALCOHOL_ABUSE', 'DRUG_ABUSE', 'VALVULAR_DISEASE', 'OBESITY', 'PERIPHERAL_VASCULAR', 'DIABETES_COMPLICATED', 'LIVER_DISEASE', 'DIABETES_UNCOMPLICATED', 'RENAL_FAILURE']]
     
-          
     run_aki_model(df, "creatinine_model")
     run_aki_model(df2, "creatinine_urine_model")
       
     cluster_ethnicity(df)
     cluster_ethnicity(df2)
     
+    cluster_system(df)
+    cluster_system(df2)
+   
     change_data_size(df)
     change_data_size(df2)
                   
