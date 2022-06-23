@@ -3,7 +3,7 @@
 
 Aki-Predictor is a set of python script running deep learning model to predict Acute Kiden Injuries during the first 7 days of stay in ICU. The proposed model was tested on MIMIC-III database.
 
-We are releasing this repository to make it possible to replicate our work, and in case it is useful for further work in this area. If you are using any part of this code repository that we have added to, we would appreciate if you cite our paper: (reference to follow afer review)
+We are releasing this repository to make it possible to replicate our work, and in case it is useful for further work in this area. If you are using any part of this code repository that we have added to, we would appreciate if you cite our paper: (reference to follow after review)
 
 This repository is released under an GNU Affero General Public License. 
 
@@ -25,8 +25,11 @@ The main MIMIC-3 dataset is accessible after passing the necessary data handling
 
 Establish an appropriate conda environment (and then activate it):
 
+```
 conda create --name some_name --file conda/my_conda_env.yml
 conda activate some_name
+```
+
 Expected install time is < 10 minutes on a reasonably modern system.
 
 # Running experiments
