@@ -25,11 +25,9 @@ AND schemaname != 'information_schema';
         user = "",
         password = "",
         host = "",
-        port = "",
+        port = "5432",
         database = mimicDB,
     )
-
-    cmd = 'psql "postgresql+psycopg2://postgres:postgres@localhost:5432/mimic" '
 
     # create sqlalchemy engine
     engine = create_engine(engine_string)
@@ -100,6 +98,7 @@ def creatinine(cursor):
               , ie.intime, ie.outtime \
               , le.valuenum as creat \
               , le.charttime \
+              , ie.DBSOURCE \
               from icustays ie \
               left join labevents le \
                 on ie.subject_id = le.subject_id \
@@ -126,6 +125,63 @@ def creatinine(cursor):
             ORDER BY cr.icustay_id, cr.charttime, cr.creat;"
     
     cursor.execute(view)        
+
+def echo_data(cursor):
+    
+    #-- This code extracts structured data from echocardiographies
+    #-- You can join it to the text notes using ROW_ID
+    #-- Just note that ROW_ID will differ across versions of MIMIC-III.
+
+
+    view = "DROP MATERIALIZED VIEW IF EXISTS ECHODATA CASCADE; \
+            CREATE MATERIALIZED VIEW ECHODATA AS \
+            select ROW_ID \
+              , subject_id, hadm_id \
+              , chartdate \
+              , cast(to_timestamp( (to_char( chartdate, 'DD-MM-YYYY' ) || substring(ne.text, 'Date/Time: [\[\]0-9*-]+ at ([0-9:]+)')), \
+                        'DD-MM-YYYYHH24:MI') as timestamp without time zone) \
+                as charttime \
+              , substring(ne.text, 'Indication: (.*?)\n') as Indication \
+              , case \
+                  when substring(ne.text, 'Height: \(in\) (.*?)\n') like '%*%' \
+                    then null \
+                  else cast(substring(ne.text, 'Height: \(in\) (.*?)\n') as numeric) \
+                end as Height \
+              , case \
+                  when substring(ne.text, 'Weight \(lb\): (.*?)\n') like '%*%' \
+                    then null \
+                  else cast(substring(ne.text, 'Weight \(lb\): (.*?)\n') as numeric) \
+                end as Weight \
+              , case \
+                  when substring(ne.text, 'BSA \(m2\): (.*?) m2\n') like '%*%' \
+                    then null \
+                  else cast(substring(ne.text, 'BSA \(m2\): (.*?) m2\n') as numeric) \
+                end as BSA \
+              , substring(ne.text, 'BP \(mm Hg\): (.*?)\n') as BP \
+              , case \
+                  when substring(ne.text, 'BP \(mm Hg\): ([0-9]+)/[0-9]+?\n') like '%*%' \
+                    then null \
+                  else cast(substring(ne.text, 'BP \(mm Hg\): ([0-9]+)/[0-9]+?\n') as numeric) \
+                end as BPSys \
+              , case \
+                  when substring(ne.text, 'BP \(mm Hg\): [0-9]+/([0-9]+?)\n') like '%*%' \
+                    then null \
+                  else cast(substring(ne.text, 'BP \(mm Hg\): [0-9]+/([0-9]+?)\n') as numeric) \
+                end as BPDias \
+              , case \
+                  when substring(ne.text, 'HR \(bpm\): ([0-9]+?)\n') like '%*%' \
+                    then null \
+                  else cast(substring(ne.text, 'HR \(bpm\): ([0-9]+?)\n') as numeric) \
+                end as HR \
+              , substring(ne.text, 'Status: (.*?)\n') as Status \
+              , substring(ne.text, 'Test: (.*?)\n') as Test \
+              , substring(ne.text, 'Doppler: (.*?)\n') as Doppler \
+              , substring(ne.text, 'Contrast: (.*?)\n') as Contrast \
+              , substring(ne.text, 'Technical Quality: (.*?)\n') as TechnicalQuality \
+            from noteevents ne \
+            where category = 'Echo';"
+            
+    cursor.execute(view)
 
 def weight_duration(cursor):
     
@@ -218,6 +274,7 @@ def weight_duration(cursor):
               SELECT \
                   wt_stg1.icustay_id \
                 , ie.intime, ie.outtime \
+                , ie.DBSOURCE \
                 , case when wt_stg1.weight_type = 'admit' and wt_stg1.rn = 1 \
                     then ie.intime - interval '2' hour \
                   else wt_stg1.charttime end as starttime \
@@ -232,6 +289,7 @@ def weight_duration(cursor):
                 icustay_id \
                 , intime, outtime \
                 , starttime \
+                , DBSOURCE \
                 , coalesce( \
                     LEAD(starttime) OVER (PARTITION BY icustay_id ORDER BY starttime), \
                     outtime + interval '2' hour \
@@ -244,6 +302,7 @@ def weight_duration(cursor):
               select \
                   icustay_id \
                 , starttime \
+                , DBSOURCE \
                 , coalesce(endtime, \
                   LEAD(starttime) OVER (partition by icustay_id order by starttime), \
                  outtime + interval '2' hour) \
@@ -260,7 +319,7 @@ def weight_duration(cursor):
               from icustays ie \
               inner join \
               ( \
-                SELECT wt1.icustay_id, wt1.starttime, wt1.weight \
+                SELECT wt1.icustay_id, wt1.starttime, wt1.weight , wt1.DBSOURCE \
                 , ROW_NUMBER() OVER (PARTITION BY wt1.icustay_id ORDER BY wt1.starttime) as rn \
                 FROM wt1 \
               ) wt \
@@ -317,7 +376,7 @@ def weight_duration(cursor):
                 and el.starttime > el.intime - interval '2' hour \
             ) \
             select \
-              wt2.icustay_id, wt2.starttime, wt2.endtime, wt2.weight \
+              wt2.icustay_id, wt2.starttime, wt2.endtime, wt2.weight\
             from wt2 \
             UNION \
             select \
@@ -398,6 +457,75 @@ def urine_kidigo(cursor):
             
     cursor.execute(view)
 
+def kidigo_48h(cursor):
+    
+    #-- This query checks if the patient had AKI during the first 48 hours of their ICU
+    #-- stay according to the KDIGO guideline.
+    #-- https://kdigo.org/wp-content/uploads/2016/10/KDIGO-2012-AKI-Guideline-English.pdf
+
+
+    view = "DROP MATERIALIZED VIEW IF EXISTS kdigo_stages_48hr; \
+            CREATE MATERIALIZED VIEW kdigo_stages_48hr AS  \
+            WITH cr_aki AS \
+            ( \
+              SELECT \
+                k.icustay_id \
+                , k.charttime \
+                , k.creat \
+                , k.DBSOURCE \
+                , k.aki_stage_creat \
+                , ROW_NUMBER() OVER (PARTITION BY k.icustay_id ORDER BY k.aki_stage_creat DESC, k.creat DESC) AS rn \
+              FROM icustays ie \
+              INNER JOIN kdigo_stages k \
+              ON ie.icustay_id = k.icustay_id \
+              WHERE k.charttime > (ie.intime - interval '6' hour) \
+              AND k.charttime <= (ie.intime + interval '48' hour) \
+              AND k.aki_stage_creat IS NOT NULL \
+            ) \
+            , uo_aki AS \
+            ( \
+              SELECT \
+                k.icustay_id \
+                , k.DBSOURCE \
+                , k.charttime \
+                , k.uo_rt_6hr, k.uo_rt_12hr, k.uo_rt_24hr \
+                , k.aki_stage_uo \
+                , ROW_NUMBER() OVER \
+                ( \
+                  PARTITION BY k.icustay_id \
+                  ORDER BY k.aki_stage_uo DESC, k.uo_rt_24hr DESC, k.uo_rt_12hr DESC, k.uo_rt_6hr DESC \
+                ) AS rn \
+              FROM icustays ie \
+              INNER JOIN kdigo_stages k \
+                ON ie.icustay_id = k.icustay_id \
+              WHERE k.charttime > (ie.intime - interval '6' hour) \
+              AND k.charttime <= (ie.intime + interval '48' hour) \
+              AND k.aki_stage_uo IS NOT NULL \
+            ) \
+            select \
+                ie.icustay_id \
+                , ie.DBSOURCE \
+              , cr.charttime as charttime_creat \
+              , cr.creat \
+              , cr.aki_stage_creat \
+              , uo.charttime as charttime_uo \
+              , uo.uo_rt_6hr \
+              , uo.uo_rt_12hr \
+              , uo.uo_rt_24hr \
+              , uo.aki_stage_uo \
+              , GREATEST(cr.aki_stage_creat,uo.aki_stage_uo) AS aki_stage_48hr \
+              , CASE WHEN GREATEST(cr.aki_stage_creat, uo.aki_stage_uo) > 0 THEN 1 ELSE 0 END AS aki_48hr \
+            FROM icustays ie \
+            LEFT JOIN cr_aki cr \
+              ON ie.icustay_id = cr.icustay_id \
+              AND cr.rn = 1 \
+            LEFT JOIN uo_aki uo \
+              ON ie.icustay_id = uo.icustay_id \
+              AND uo.rn = 1 \
+            order by ie.icustay_id; "
+            
+    cursor.execute(view)      
+
 def kidigo_7_days_creatinine(cursor): 
    
     #-- This query checks if the patient had AKI during the first 7 days of their ICU
@@ -410,6 +538,7 @@ def kidigo_7_days_creatinine(cursor):
             (  \
               SELECT  \
                 k.icustay_id  \
+                , k.DBSOURCE \
                 , k.charttime  \
                 , k.creat  \
                 , k.aki_stage_creat  \
@@ -423,6 +552,7 @@ def kidigo_7_days_creatinine(cursor):
             )  \
             select  \
                 ie.icustay_id  \
+                , ie.DBSOURCE \
               , cr.charttime as charttime_creat  \
               , cr.creat  \
               , cr.aki_stage_creat  \
@@ -469,6 +599,7 @@ def kidigo_stages_creatinine(cursor):
             ) \
             select \
                 ie.icustay_id \
+                , ie.DBSOURCE \
               , tm.charttime \
               , cr.creat \
               , cr.aki_stage_creat \
@@ -495,6 +626,7 @@ def kidigo_7_days(cursor):
             (  \
               SELECT  \
                 k.icustay_id  \
+                , k.DBSOURCE \
                 , k.charttime  \
                 , k.creat  \
                 , k.aki_stage_creat  \
@@ -510,6 +642,7 @@ def kidigo_7_days(cursor):
             ( \
               SELECT  \
                 k.icustay_id  \
+                , k.DBSOURCE \
                 , k.charttime  \
                 , k.uo_rt_6hr, k.uo_rt_12hr, k.uo_rt_24hr  \
                 , k.aki_stage_uo  \
@@ -527,6 +660,7 @@ def kidigo_7_days(cursor):
             )  \
             select  \
                 ie.icustay_id  \
+                , ie.DBSOURCE \
               , cr.charttime as charttime_creat  \
               , cr.creat  \
               , cr.aki_stage_creat  \
@@ -577,6 +711,7 @@ def kidigo_stages(cursor):
             ( \
               select \
                   uo.icustay_id \
+                , ie.DBSOURCE \
                 , uo.charttime \
                 , uo.weight \
                 , uo.uo_rt_6hr \
@@ -606,6 +741,7 @@ def kidigo_stages(cursor):
             ) \
             select \
                 ie.icustay_id \
+              , ie.DBSOURCE \
               , tm.charttime \
               , cr.creat \
               , cr.aki_stage_creat \
@@ -639,7 +775,7 @@ def get_labevents(cursor):
     view = "DROP MATERIALIZED VIEW IF EXISTS labstay CASCADE; \
             CREATE materialized VIEW labstay AS \
             SELECT \
-                pvt.subject_id, pvt.hadm_id, pvt.icustay_id \
+                pvt.subject_id, pvt.hadm_id, pvt.icustay_id , pvt.DBSOURCE \
                   , min(CASE WHEN label = 'ANION GAP' THEN valuenum ELSE null END) as ANIONGAP_min \
                   , max(CASE WHEN label = 'ANION GAP' THEN valuenum ELSE null END) as ANIONGAP_max  \
                   , min(CASE WHEN label = 'ALBUMIN' THEN valuenum ELSE null END) as ALBUMIN_min \
@@ -679,7 +815,7 @@ def get_labevents(cursor):
                   , min(CASE WHEN label = 'WBC' THEN valuenum ELSE null end) as WBC_min \
                   , max(CASE WHEN label = 'WBC' THEN valuenum ELSE null end) as WBC_max \
             FROM \
-            ( SELECT ie.subject_id, ie.hadm_id, ie.icustay_id \
+            ( SELECT ie.subject_id, ie.hadm_id, ie.icustay_id ,ie.DBSOURCE \
               , CASE \
                     WHEN itemid = 50868 THEN 'ANION GAP' \
                     WHEN itemid = 50862 THEN 'ALBUMIN' \
@@ -774,8 +910,8 @@ def get_labevents(cursor):
                 ) \
                 AND valuenum IS NOT null AND valuenum > 0 \
             ) pvt \
-            GROUP BY pvt.subject_id, pvt.hadm_id, pvt.icustay_id \
-            ORDER BY pvt.subject_id, pvt.hadm_id, pvt.icustay_id;"
+            GROUP BY pvt.subject_id, pvt.hadm_id, pvt.icustay_id , pvt.DBSOURCE \
+            ORDER BY pvt.subject_id, pvt.hadm_id, pvt.icustay_id, pvt.DBSOURCE;"
      
     cursor.execute(view) 
 
@@ -786,7 +922,7 @@ def get_vitals_chart(cursor):
 
     view = "DROP MATERIALIZED VIEW IF EXISTS vitalsfirstday CASCADE; \
             create materialized view vitalsfirstday as \
-            SELECT pvt.subject_id, pvt.hadm_id, pvt.icustay_id \
+            SELECT pvt.subject_id, pvt.hadm_id, pvt.icustay_id, pvt.DBSOURCE \
             , min(case when VitalID = 1 then valuenum else null end) as HeartRate_Min \
             , max(case when VitalID = 1 then valuenum else null end) as HeartRate_Max \
             , avg(case when VitalID = 1 then valuenum else null end) as HeartRate_Mean \
@@ -812,7 +948,7 @@ def get_vitals_chart(cursor):
             , max(case when VitalID = 8 then valuenum else null end) as Glucose_Max \
             , avg(case when VitalID = 8 then valuenum else null end) as Glucose_Mean \
             FROM  ( \
-            select ie.subject_id, ie.hadm_id, ie.icustay_id \
+            select ie.subject_id, ie.hadm_id, ie.icustay_id, ie.DBSOURCE\
             , case \
               when itemid in (211,220045) and valuenum > 0 and valuenum < 300 then 1 \
               when itemid in (51,442,455,6701,220179,220050) and valuenum > 0 and valuenum < 400 then 2 \
@@ -872,8 +1008,8 @@ def get_vitals_chart(cursor):
             678 \
             ) \
             ) pvt \
-            group by pvt.subject_id, pvt.hadm_id, pvt.icustay_id  \
-            order by pvt.subject_id, pvt.hadm_id, pvt.icustay_id;"
+            group by pvt.subject_id, pvt.hadm_id, pvt.icustay_id, pvt.DBSOURCE  \
+            order by pvt.subject_id, pvt.hadm_id, pvt.icustay_id, pvt.DBSOURCE;"
     
     cursor.execute(view)
 
@@ -1016,6 +1152,7 @@ def count_icustays(cursor):
     cursor.execute(query) 
     
     rows = cursor.fetchall()
+    print(len(rows))
                  
 if __name__ == '__main__':
     
@@ -1031,60 +1168,71 @@ if __name__ == '__main__':
     except Exception as error:
         print(error)
     
-    test_postgres(cursor)
-    
-    urine_output(cursor)
-    print("view urine_output created")
-        
+    print("connection succeded")
+   # test_postgres(cursor)
+    #urine_output(cursor)
+    #print("view urine_output created")
+    #echo_data(cursor)
+    #print("view echo_data created")
     weight_duration(cursor)
     print("view weight_duration created")
-    
     urine_kidigo(cursor)
     print("view urine_kidigo created")
-    
     creatinine(cursor)
     print("view creatinine created")
-    
     kidigo_stages(cursor)
     print("view kidigo_stages created")
     query = "select * from kdigo_stages"
     df = pd.read_sql_query(query, conn)
-    df.to_csv("AKI_KIDIGO_STAGES_SQL.csv", encoding='utf-8', header=True)
-          
+      
+    df.to_csv("AKI_KIDIGO_STAGES_SQL_DBSOURCE.csv", encoding='utf-8', header=True)
+     
+    kidigo_48h(cursor)
+    print("view kidigo_48h created")
+     
+    query = "select * from kdigo_stages_48hr"
+    df = pd.read_sql_query(query, conn)
+      
+    df.to_csv("AKI_KIDIGO_48H_SQL_DBSOURCE.csv", encoding='utf-8', header=True)
+     
     kidigo_7_days(cursor)
-    print("view kidigo_7_days created")     
+    print("view kidigo_7_days created")
+         
     query = "select * from kdigo_stages_7day"
     df = pd.read_sql_query(query, conn)
-    df.to_csv("AKI_KIDIGO_7D_SQL.csv", encoding='utf-8', header=True)
+      
+    df.to_csv("AKI_KIDIGO_7D_SQL_DBSOURCE.csv", encoding='utf-8', header=True)
  
     kidigo_stages_creatinine(cursor)
     print("view kidigo_stages_creatinine created")
     query = "select * from kdigo_stages_creatinine"
     df = pd.read_sql_query(query, conn)
-    df.to_csv("AKI_KIDIGO_STAGES_SQL_CREATININE.csv", encoding='utf-8', header=True)
-
+       
+    df.to_csv("AKI_KIDIGO_STAGES_SQL_CREATININE_DBSOURCE.csv", encoding='utf-8', header=True)
+ 
     kidigo_7_days_creatinine(cursor)
     print("view kidigo_7_days_creatinine created")       
     query = "select * from kdigo_7_days_creatinine"
     df = pd.read_sql_query(query, conn)
-    df.to_csv("AKI_KIDIGO_7D_SQL_CREATININE.csv", encoding='utf-8', header=True)
-
+       
+    df.to_csv("AKI_KIDIGO_7D_SQL_CREATININE_DBSOURCE.csv", encoding='utf-8', header=True)
+ 
     get_labevents(cursor)
-#      
+      
     query = "select * from labstay"
     df = pd.read_sql_query(query, conn)   
-    df.to_csv("labstay.csv", encoding='utf-8', header=True)
+    df.to_csv("labstay_DBSOURCE.csv", encoding='utf-8', header=True)
  
     get_vitals_chart(cursor)
      
     query = "select * from vitalsfirstday"
     df = pd.read_sql_query(query, conn)   
-    df.to_csv("chart_vitals_stay.csv", encoding='utf-8', header=True)
+    df.to_csv("chart_vitals_stay_DBSOURCE.csv", encoding='utf-8', header=True)
      
     get_comorbidities(cursor)
    
     query = "select * from COMORBIDITIES"
     df = pd.read_sql_query(query, conn)   
-    df.to_csv("comorbidities.csv", encoding='utf-8', header=True)
-
+    df.to_csv("comorbidities_DBSOURCE.csv", encoding='utf-8', header=True)
+ 
     count_icustays(cursor)
